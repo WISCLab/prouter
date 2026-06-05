@@ -20,6 +20,7 @@ _SKIP_NAMES = frozenset(
     }
 )
 
+
 def bottom_up_traversal(path: Path) -> Iterator[Path]:
     """Yield every path under ``path`` from the leaves up to the root.
 
@@ -134,9 +135,17 @@ class GraphBuilder:
             raise ValueError(f"Path '{self.results_folder}' does not exist.")
         if not self.results_folder.is_dir():
             raise ValueError(f"Path '{self.results_folder}' is not a directory.")
-        for filename in ["routable_paths.csv", "problem_paths.csv", "clean_paths.csv", "routes.csv"]:
+        for filename in [
+            "routable_paths.csv",
+            "problem_paths.csv",
+            "clean_paths.csv",
+            "routes.csv",
+        ]:
             if (self.results_folder / filename).exists():
-                raise ValueError(f"File '{filename}' already exists in '{self.results_folder}'. Please remove it to avoid overwriting.")
+                raise ValueError(
+                    f"File '{filename}' already exists in '{self.results_folder}'. "
+                    "Please remove it to avoid overwriting."
+                )
 
         print("Initialized GraphBuilder")
 
@@ -250,15 +259,22 @@ class GraphBuilder:
         if not self.graph:
             print("No graph to save. Please run build() before saving.")
             return
-        
+
         # Double Check for output collisons to see if we can't save before processing the graph (unlikely case)
         if not path.exists():
             raise ValueError(f"Path '{path}' does not exist.")
         if not path.is_dir():
             raise ValueError(f"Path '{path}' is not a directory.")
-        for filename in ["routable_paths.csv", "problem_paths.csv", "clean_paths.csv", "routes.csv"]:
-            if (self.results_folder / filename).exists():
-                raise ValueError(f"File '{filename}' already exists in '{path}'. Please remove it to avoid overwriting.")
+        for filename in [
+            "routable_paths.csv",
+            "problem_paths.csv",
+            "clean_paths.csv",
+            "routes.csv",
+        ]:
+            if (path / filename).exists():
+                raise ValueError(
+                    f"File '{filename}' already exists in '{path}'. Please remove it to avoid overwriting."
+                )
 
         # Exactly one input_pattern is expected to match each path.
         routable_paths = {"path": [], "node": [], "input_pattern": [], "output_pattern": [], "new_path": []}
