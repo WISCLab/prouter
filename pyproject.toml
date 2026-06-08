@@ -1,6 +1,6 @@
 [project]
 name = "prouter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Route filesystem paths through pattern -> handler -> pattern rules with visibility."
 readme = "README.md"
 requires-python = ">=3.12"
