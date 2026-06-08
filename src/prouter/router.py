@@ -312,7 +312,18 @@ class GraphBuilder:
             return str(p).casefold() if case_insensitive else str(p)
 
         occupied = {slot(p) for p in paths}
-        for old_path, _input_pattern, node, _output_pattern, new_path, valid in self.graph:
+        total = len(self.graph)
+        start = time.perf_counter()
+        for index, (old_path, _input_pattern, node, _output_pattern, new_path, valid) in enumerate(
+            self.graph, start=1
+        ):
+            elapsed = time.perf_counter() - start
+            eta = self._format_eta(elapsed, index - 1, total)
+            print(
+                f"\rChecking for collisions: {index}/{total} ({(index / total * 100):.1f}%) - ETA {eta}",
+                end="",
+                flush=True,
+            )
             if not valid:
                 continue  # Unrouted (clean/problem) paths stay put; nothing moves.
             old_slot, new_slot = slot(old_path), slot(new_path)
@@ -325,6 +336,7 @@ class GraphBuilder:
             occupied.discard(old_slot)
             occupied.add(new_slot)
 
+        print()  # Finish the progress line
         return self.graph
 
     def save(self) -> None:
