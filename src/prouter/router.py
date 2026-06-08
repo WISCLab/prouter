@@ -177,6 +177,35 @@ class GraphBuilder:
         remaining = max(total - completed, 0) * rate
         return f"{remaining:.1f}s"
 
+    @staticmethod
+    def _detect_case_insensitive(paths: list[Path]) -> bool:
+        """Probe whether the traversed filesystem treats names case-insensitively.
+
+        Renames collide case-insensitively on volumes like APFS/HFS+/NTFS, so the
+        collision check must fold case there -- but folding on a case-sensitive
+        volume would flag legitimately distinct names (``README`` vs ``readme``)
+        as collisions. Decided from the first real path with cased characters: if
+        its case-swapped form still resolves to the same entry, the volume is
+        case-insensitive. ``os.path.normcase`` is unhelpful here because it is a
+        no-op on macOS.
+
+        Args:
+            paths: List of paths to check for case sensitivity. The first path with cased characters is used for the test.
+
+        Returns:
+            True if the filesystem is case-insensitive, False if it is case-sensitive.
+        """
+        for path in paths:
+            text = str(path)
+            swapped = text.swapcase()
+            if swapped == text:
+                continue  # nothing cased to distinguish on this path
+            try:
+                return os.path.samefile(text, swapped)
+            except OSError:
+                return False  # swapped form does not resolve -> case-sensitive
+        return False
+
     def add_route(self, input_pattern: re.Pattern, node: Callable, output_pattern: re.Pattern) -> None:
         """add routes for how to transform paths when pattern is met."""
         # Check if route is already present
@@ -249,6 +278,13 @@ class GraphBuilder:
                             f"parent '{path.parent}' != '{new_path.parent}'. "
                             "Nodes may only rewrite the basename."
                         )
+                    # The skip-names are never traversed, so a rewrite onto one
+                    # would be invisible to the collision replay below; forbid it.
+                    if new_path.name in _SKIP_NAMES:
+                        raise ValueError(
+                            f"Node '{node.__name__}' rewrote '{path}' onto reserved name "
+                            f"'{new_path.name}'. Nodes may not produce skip-listed names."
+                        )
                     if output_pattern.fullmatch(new_path.name):
                         valid = True
                     self.graph.append((path, input_pattern, node, output_pattern, new_path, valid))
@@ -257,6 +293,38 @@ class GraphBuilder:
 
         print()  # Finish the progress line
         print(f"Graph built with {len(self.graph)} entries in {(time.perf_counter() - start):.1f}s")
+
+        # Renames are not atomic: each one is applied against the namespace left
+        # behind by every rename before it. Replay them in graph order against a
+        # live set of occupied paths, seeded with the original tree, so that the
+        # exact order they would run in is proven collision-free. This catches an
+        # order like "A -> B" before "B -> C" (B is still occupied when A lands on
+        # it) while allowing "B -> C" before "A -> B" (B has been vacated first).
+        # On a case-insensitive volume (APFS/HFS+/NTFS) the namespace is keyed
+        # case-folded, so renaming onto "File.txt" collides with an existing
+        # "file.txt" exactly as it would on disk; on a case-sensitive volume the
+        # key is left exact so distinct names don't read as collisions. The no-op
+        # guard is in this same folded space, so a legal case-only rename
+        # (a.txt -> A.txt on macOS) is not mistaken for a collision.
+        case_insensitive = self._detect_case_insensitive(paths)
+
+        def slot(p: Path) -> str:
+            return str(p).casefold() if case_insensitive else str(p)
+
+        occupied = {slot(p) for p in paths}
+        for old_path, _input_pattern, node, _output_pattern, new_path, valid in self.graph:
+            if not valid:
+                continue  # Unrouted (clean/problem) paths stay put; nothing moves.
+            old_slot, new_slot = slot(old_path), slot(new_path)
+            if new_slot != old_slot and new_slot in occupied:
+                raise ValueError(
+                    f"Namespace collision: renaming '{old_path}' -> '{new_path}' via node "
+                    f"'{node.__name__}' would clobber an existing path at that point in the "
+                    "rename order."
+                )
+            occupied.discard(old_slot)
+            occupied.add(new_slot)
+
         return self.graph
 
     def save(self) -> None:
