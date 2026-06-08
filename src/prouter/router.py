@@ -240,6 +240,15 @@ class GraphBuilder:
                     valid = False
                     input_pattern, node, output_pattern = self.router[candidate]
                     new_path = node(path)
+                    # A node may only rewrite the basename; it must never move a
+                    # path between directories. Anything but the basename changing
+                    # is a misbehaving node, not a routing result.
+                    if new_path.parent != path.parent:
+                        raise ValueError(
+                            f"Node '{node.__name__}' changed more than the basename of '{path}': "
+                            f"parent '{path.parent}' != '{new_path.parent}'. "
+                            "Nodes may only rewrite the basename."
+                        )
                     if output_pattern.fullmatch(new_path.name):
                         valid = True
                     self.graph.append((path, input_pattern, node, output_pattern, new_path, valid))
