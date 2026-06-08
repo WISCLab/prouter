@@ -32,11 +32,11 @@ import re
 from pathlib import Path
 from prouter import GraphBuilder
 
-# An input pattern, a handler (Path -> Path), and the output pattern the result must match.
+# patterns for reuse
 draft = re.compile(r"(\d+)_draft\.wav")
 final = re.compile(r"\d+_final\.wav")
 
-# a handler (node) may only rewrite the basename, if more than the basename is altered that raises an error in build().
+# a handler (node) may only rewrite the basename, if more than the basename is altered that raises a ValueError.
 def rename(path: Path) -> Path:
     return path.with_name(path.name.replace("_draft", "_final"))
 
@@ -44,10 +44,11 @@ def rename(path: Path) -> Path:
 builder = GraphBuilder(root_path=Path("/path/to/draw/from"), results_folder=Path("/Folder/to/save/results"))
 
 # you can't add the same input_pattern twice, a ValueError is raised.
+# routes map (input_pattern -> handler -> output_pattern).
 builder.add_route(draft, rename, final) 
 
 # walk the tree, match routes, apply handlers in memory.
-# the namespace changes are simulated and an error is raised if any collisions would occur.
+# the namespace changes are simulated and a ValueError is raised if any collisions would occur.
 builder.build()
 
 # write the CSV files describing the transformation to the results_folder (see output section below).

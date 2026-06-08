@@ -130,7 +130,7 @@ class GraphBuilder:
         self.pattern_names = {}  # Compiled pattern -> variable name harvested at add_route time
 
         if not self.root_path.exists():
-            raise ValueError(f"Path '{self.root_path}' does not exist.")
+            raise FileNotFoundError(f"Path '{self.root_path}' does not exist.")
         if not self.results_folder.exists():
             raise ValueError(f"Path '{self.results_folder}' does not exist.")
         if not self.results_folder.is_dir():
@@ -142,7 +142,7 @@ class GraphBuilder:
             "routes.csv",
         ]:
             if (self.results_folder / filename).exists():
-                raise ValueError(
+                raise FileExistsError(
                     f"File '{filename}' already exists in '{self.results_folder}'. "
                     "Please remove it to avoid overwriting."
                 )
@@ -190,7 +190,8 @@ class GraphBuilder:
         no-op on macOS.
 
         Args:
-            paths: List of paths to check for case sensitivity. The first path with cased characters is used for the test.
+            paths: List of paths to check for case sensitivity.
+            The first path with cased characters is used for the test.
 
         Returns:
             True if the filesystem is case-insensitive, False if it is case-sensitive.
@@ -323,9 +324,7 @@ class GraphBuilder:
         occupied = {slot(p) for p in paths}
         total = len(self.graph)
         start = time.perf_counter()
-        for index, (old_path, _input_pattern, node, _output_pattern, new_path, valid) in enumerate(
-            self.graph, start=1
-        ):
+        for index, (old_path, _input_pattern, node, _output_pattern, new_path, valid) in enumerate(self.graph, start=1):
             elapsed = time.perf_counter() - start
             eta = self._format_eta(elapsed, index - 1, total)
             print(
@@ -351,12 +350,13 @@ class GraphBuilder:
     def save(self) -> None:
         """Save the graph to CSV files at the specified folder."""
         path = self.results_folder
+
+        if not self.root_path.exists():
+            raise FileNotFoundError(f"Path '{self.root_path}' does not exist.")
         if not self.router:
-            print("No routes to save. Please add routes before saving.")
-            return
+            raise ValueError("No routes defined. Please add routes before saving.")
         if not self.graph:
-            print("No graph to save. Please run build() before saving.")
-            return
+            raise ValueError("Graph is not built. Please build the graph before saving.")
 
         # Double Check for output collisons to see if we can't save before processing the graph (unlikely case)
         if not path.exists():
@@ -370,7 +370,7 @@ class GraphBuilder:
             "routes.csv",
         ]:
             if (path / filename).exists():
-                raise ValueError(
+                raise FileExistsError(
                     f"File '{filename}' already exists in '{path}'. Please remove it to avoid overwriting."
                 )
 
