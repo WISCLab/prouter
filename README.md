@@ -11,7 +11,7 @@ Route filesystem paths through `pattern -> handler -> pattern` rules with visibi
 
 The idea is simple. You define routes, each one an input pattern, a handler that rewrites a path, and an output pattern the result has to match. prouter walks a directory tree and runs every path through the route whose input pattern matches its basename, keeping track of what it did along the way.
 
-It never touches the filesystem. Nothing gets moved or renamed. What you get back is a set of CSVs describing the transform it would apply, so you can look it over before committing to anything.
+It never modifies the tree it's routing (nothing gets moved or renamed). What you get back is a set of CSVs describing the transform it would apply, so you can look it over before committing to anything.
 
 The tree is walked bottom-up, deepest paths first and the root last. This is deliberate: renaming children before their parents means a directory rename never invalidates paths you haven't reached yet. The CSVs preserve that order, so applying the rows top to bottom is always safe.
 
@@ -36,18 +36,26 @@ from prouter import GraphBuilder
 draft = re.compile(r"(\d+)_draft\.wav")
 final = re.compile(r"\d+_final\.wav")
 
+# a handler (node) may only rewrite the basename, if more than the basename is altered that raises an error in build().
 def rename(path: Path) -> Path:
     return path.with_name(path.name.replace("_draft", "_final"))
 
+# assures root_path exist, pre-checks for collisions that would occur later in results_folder.
 builder = GraphBuilder(root_path=Path("/path/to/draw/from"), results_folder=Path("/Folder/to/save/results"))
-builder.add_route(draft, rename, final)
 
-builder.build()             # walk the tree, match routes, apply handlers in memory
-builder.save()              # write the result CSVs
+# you can't add the same input_pattern twice, a ValueError is raised.
+builder.add_route(draft, rename, final) 
+
+# walk the tree, match routes, apply handlers in memory.
+# the namespace changes are simulated and an error is raised if any collisions would occur.
+builder.build()
+
+# write the CSV files describing the transformation to the results_folder (see output section below).
+builder.save()
 ```
 
 > [!NOTE]
-> When adding a route with `add_route` You can't register the same input pattern twice (a ValueError raises). Matching against those patterns is a `fullmatch` against the whole basename, so a pattern has to account for the entire filename, not just part of it. And at build() time, only one input pattern may match a given path. If two would match, that's ambiguous and prouter raises rather than guess.
+> Matching against those patterns is a `fullmatch` against the whole basename, so a pattern has to account for the entire filename, not just part of it.
 
 ## Output
 
