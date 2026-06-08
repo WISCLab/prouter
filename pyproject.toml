@@ -40,3 +40,7 @@ select = [
 [[tool.shredguard.patterns]]
 regex = "_[MF]_"
 description = "Problem Catch"
+
+[[tool.shredguard.patterns]]
+regex = "v\\d+"
+description = "Visit pattern"

@@ -130,7 +130,7 @@ class GraphBuilder:
         self.pattern_names = {}  # Compiled pattern -> variable name harvested at add_route time
 
         if not self.root_path.exists():
-            raise ValueError(f"Path '{self.root_path}' does not exist.")
+            raise FileNotFoundError(f"Path '{self.root_path}' does not exist.")
         if not self.results_folder.exists():
             raise ValueError(f"Path '{self.results_folder}' does not exist.")
         if not self.results_folder.is_dir():
@@ -142,7 +142,7 @@ class GraphBuilder:
             "routes.csv",
         ]:
             if (self.results_folder / filename).exists():
-                raise ValueError(
+                raise FileExistsError(
                     f"File '{filename}' already exists in '{self.results_folder}'. "
                     "Please remove it to avoid overwriting."
                 )
@@ -177,24 +177,56 @@ class GraphBuilder:
         remaining = max(total - completed, 0) * rate
         return f"{remaining:.1f}s"
 
+    @staticmethod
+    def _detect_case_insensitive(paths: list[Path]) -> bool:
+        """Probe whether the traversed filesystem treats names case-insensitively.
+
+        Renames collide case-insensitively on volumes like APFS/HFS+/NTFS, so the
+        collision check must fold case there -- but folding on a case-sensitive
+        volume would flag legitimately distinct names (``README`` vs ``readme``)
+        as collisions. Decided from the first real path with cased characters: if
+        its case-swapped form still resolves to the same entry, the volume is
+        case-insensitive. ``os.path.normcase`` is unhelpful here because it is a
+        no-op on macOS.
+
+        Args:
+            paths: List of paths to check for case sensitivity.
+            The first path with cased characters is used for the test.
+
+        Returns:
+            True if the filesystem is case-insensitive, False if it is case-sensitive.
+        """
+        for path in paths:
+            text = str(path)
+            swapped = text.swapcase()
+            if swapped == text:
+                continue  # nothing cased to distinguish on this path
+            try:
+                return os.path.samefile(text, swapped)
+            except OSError:
+                return False  # swapped form does not resolve -> case-sensitive
+        return False
+
     def add_route(self, input_pattern: re.Pattern, node: Callable, output_pattern: re.Pattern) -> None:
         """add routes for how to transform paths when pattern is met."""
         # Check if route is already present
         if input_pattern in self.router:
             raise ValueError(f"Route for input pattern '{input_pattern.pattern}' already exists.")
 
-        # Add input to the list of input patterns
-        self.input_patterns.append(input_pattern)
-
-        # Add output to the list of output patterns if not already present
+        # Validate against candidate lists *before* mutating stored state, so a
+        # rejected route leaves input_patterns/output_patterns untouched. (An
+        # earlier in-place append/pop rollback corrupted state when the output
+        # was already present: the append was skipped but the pop was not.)
+        candidate_inputs = self.input_patterns + [input_pattern]
+        candidate_outputs = self.output_patterns
         if output_pattern not in self.output_patterns:
-            self.output_patterns.append(output_pattern)
-
-        # Validate uniqueness and disjointness of patterns
-        if not validate_uniqueness_and_disjointness(self.input_patterns + self.output_patterns):
-            self.input_patterns.pop()  # Remove the last added input pattern
-            self.output_patterns.pop()  # Remove the last added output pattern
+            candidate_outputs = self.output_patterns + [output_pattern]
+        if not validate_uniqueness_and_disjointness(candidate_inputs + candidate_outputs):
             raise ValueError(f"Input pattern '{input_pattern.pattern}' is not unique.")
+
+        # Validation passed: commit the new patterns.
+        self.input_patterns = candidate_inputs
+        self.output_patterns = candidate_outputs
 
         # Harvest the variable names the caller used, for human-readable CSV output
         self.pattern_names.setdefault(input_pattern, self._harvest_name(input_pattern))
@@ -240,6 +272,29 @@ class GraphBuilder:
                     valid = False
                     input_pattern, node, output_pattern = self.router[candidate]
                     new_path = node(path)
+                    # Everything downstream (parent comparison, basename checks,
+                    # collision slots) assumes a Path; fail clearly if not.
+                    if not isinstance(new_path, Path):
+                        raise TypeError(
+                            f"Node '{node.__name__}' returned {type(new_path).__name__} for '{path}'; "
+                            "nodes must return a Path."
+                        )
+                    # A node may only rewrite the basename; it must never move a
+                    # path between directories. Anything but the basename changing
+                    # is a misbehaving node, not a routing result.
+                    if new_path.parent != path.parent:
+                        raise ValueError(
+                            f"Node '{node.__name__}' changed more than the basename of '{path}': "
+                            f"parent '{path.parent}' != '{new_path.parent}'. "
+                            "Nodes may only rewrite the basename."
+                        )
+                    # The skip-names are never traversed, so a rewrite onto one
+                    # would be invisible to the collision replay below; forbid it.
+                    if new_path.name in _SKIP_NAMES:
+                        raise ValueError(
+                            f"Node '{node.__name__}' rewrote '{path}' onto reserved name "
+                            f"'{new_path.name}'. Nodes may not produce skip-listed names."
+                        )
                     if output_pattern.fullmatch(new_path.name):
                         valid = True
                     self.graph.append((path, input_pattern, node, output_pattern, new_path, valid))
@@ -248,17 +303,60 @@ class GraphBuilder:
 
         print()  # Finish the progress line
         print(f"Graph built with {len(self.graph)} entries in {(time.perf_counter() - start):.1f}s")
+
+        # Renames are not atomic: each one is applied against the namespace left
+        # behind by every rename before it. Replay them in graph order against a
+        # live set of occupied paths, seeded with the original tree, so that the
+        # exact order they would run in is proven collision-free. This catches an
+        # order like "A -> B" before "B -> C" (B is still occupied when A lands on
+        # it) while allowing "B -> C" before "A -> B" (B has been vacated first).
+        # On a case-insensitive volume (APFS/HFS+/NTFS) the namespace is keyed
+        # case-folded, so renaming onto "File.txt" collides with an existing
+        # "file.txt" exactly as it would on disk; on a case-sensitive volume the
+        # key is left exact so distinct names don't read as collisions. The no-op
+        # guard is in this same folded space, so a legal case-only rename
+        # (a.txt -> A.txt on macOS) is not mistaken for a collision.
+        case_insensitive = self._detect_case_insensitive(paths)
+
+        def slot(p: Path) -> str:
+            return str(p).casefold() if case_insensitive else str(p)
+
+        occupied = {slot(p) for p in paths}
+        total = len(self.graph)
+        start = time.perf_counter()
+        for index, (old_path, _input_pattern, node, _output_pattern, new_path, valid) in enumerate(self.graph, start=1):
+            elapsed = time.perf_counter() - start
+            eta = self._format_eta(elapsed, index - 1, total)
+            print(
+                f"\rChecking for collisions: {index}/{total} ({(index / total * 100):.1f}%) - ETA {eta}",
+                end="",
+                flush=True,
+            )
+            if not valid:
+                continue  # Unrouted (clean/problem) paths stay put; nothing moves.
+            old_slot, new_slot = slot(old_path), slot(new_path)
+            if new_slot != old_slot and new_slot in occupied:
+                raise ValueError(
+                    f"Namespace collision: renaming '{old_path}' -> '{new_path}' via node "
+                    f"'{node.__name__}' would clobber an existing path at that point in the "
+                    "rename order."
+                )
+            occupied.discard(old_slot)
+            occupied.add(new_slot)
+
+        print()  # Finish the progress line
         return self.graph
 
     def save(self) -> None:
         """Save the graph to CSV files at the specified folder."""
         path = self.results_folder
+
+        if not self.root_path.exists():
+            raise FileNotFoundError(f"Path '{self.root_path}' does not exist.")
         if not self.router:
-            print("No routes to save. Please add routes before saving.")
-            return
+            raise ValueError("No routes defined. Please add routes before saving.")
         if not self.graph:
-            print("No graph to save. Please run build() before saving.")
-            return
+            raise ValueError("Graph is not built. Please build the graph before saving.")
 
         # Double Check for output collisons to see if we can't save before processing the graph (unlikely case)
         if not path.exists():
@@ -272,7 +370,7 @@ class GraphBuilder:
             "routes.csv",
         ]:
             if (path / filename).exists():
-                raise ValueError(
+                raise FileExistsError(
                     f"File '{filename}' already exists in '{path}'. Please remove it to avoid overwriting."
                 )
 
