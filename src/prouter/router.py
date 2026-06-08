@@ -212,18 +212,20 @@ class GraphBuilder:
         if input_pattern in self.router:
             raise ValueError(f"Route for input pattern '{input_pattern.pattern}' already exists.")
 
-        # Add input to the list of input patterns
-        self.input_patterns.append(input_pattern)
-
-        # Add output to the list of output patterns if not already present
+        # Validate against candidate lists *before* mutating stored state, so a
+        # rejected route leaves input_patterns/output_patterns untouched. (An
+        # earlier in-place append/pop rollback corrupted state when the output
+        # was already present: the append was skipped but the pop was not.)
+        candidate_inputs = self.input_patterns + [input_pattern]
+        candidate_outputs = self.output_patterns
         if output_pattern not in self.output_patterns:
-            self.output_patterns.append(output_pattern)
-
-        # Validate uniqueness and disjointness of patterns
-        if not validate_uniqueness_and_disjointness(self.input_patterns + self.output_patterns):
-            self.input_patterns.pop()  # Remove the last added input pattern
-            self.output_patterns.pop()  # Remove the last added output pattern
+            candidate_outputs = self.output_patterns + [output_pattern]
+        if not validate_uniqueness_and_disjointness(candidate_inputs + candidate_outputs):
             raise ValueError(f"Input pattern '{input_pattern.pattern}' is not unique.")
+
+        # Validation passed: commit the new patterns.
+        self.input_patterns = candidate_inputs
+        self.output_patterns = candidate_outputs
 
         # Harvest the variable names the caller used, for human-readable CSV output
         self.pattern_names.setdefault(input_pattern, self._harvest_name(input_pattern))
@@ -269,6 +271,13 @@ class GraphBuilder:
                     valid = False
                     input_pattern, node, output_pattern = self.router[candidate]
                     new_path = node(path)
+                    # Everything downstream (parent comparison, basename checks,
+                    # collision slots) assumes a Path; fail clearly if not.
+                    if not isinstance(new_path, Path):
+                        raise TypeError(
+                            f"Node '{node.__name__}' returned {type(new_path).__name__} for '{path}'; "
+                            "nodes must return a Path."
+                        )
                     # A node may only rewrite the basename; it must never move a
                     # path between directories. Anything but the basename changing
                     # is a misbehaving node, not a routing result.
